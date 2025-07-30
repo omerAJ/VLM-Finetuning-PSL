@@ -1,5 +1,5 @@
 accelerate<1
-bitsandbytes==0.42.0
+bitsandbytes
 decord
 deepspeed>=0.13.5
 einops==0.6.1
