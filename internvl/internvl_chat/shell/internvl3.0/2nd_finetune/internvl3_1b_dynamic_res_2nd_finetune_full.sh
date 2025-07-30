@@ -28,7 +28,7 @@ torchrun \
   --master_addr=127.0.0.1 \
   --nproc_per_node=${GPUS} \
   --master_port=${MASTER_PORT} \
-  /train/internvl_chat_finetune.py \
+  internvl/train/internvl_chat_finetune.py \
   --model_name_or_path "OpenGVLab/InternVL3-1B" \
   --conv_style "internvl2_5" \
   --use_fast_tokenizer False \
