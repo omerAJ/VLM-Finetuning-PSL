@@ -33,7 +33,7 @@ torchrun \
   --conv_style "internvl2_5" \
   --use_fast_tokenizer False \
   --output_dir ${OUTPUT_DIR} \
-  --meta_path "/content/VLM-Finetuning-PSL/internvl/internvl_chat/shell/data/dataset.jsonl" \
+  --meta_path "/content/VLM-Finetuning-PSL/config.json" \
  --overwrite_output_dir True \
   --force_image_size 448 \
   --max_dynamic_patch 12 \
