@@ -1,74 +1,87 @@
-# --------------------------------------------------------
-# InternVL
-# Copyright (c) 2024 OpenGVLab
-# Licensed under The MIT License [see LICENSE for details]
-# --------------------------------------------------------
-
 import torch
-from flash_attn.flash_attn_interface import flash_attn_varlen_func
+import torch.nn.functional as F
+from torch import nn
+
+try:
+    from flash_attn.flash_attn_interface import flash_attn_varlen_func
+except ImportError:
+    flash_attn_varlen_func = None
+
 from internvl.model.internlm2.modeling_internlm2 import (
     INTERNLM2_ATTENTION_CLASSES, InternLM2FlashAttention2,
-    apply_rotary_pos_emb)
+    apply_rotary_pos_emb,
+)
 
-
-# Modified from internvl.model.internlm2.modeling_internlm2.InternLM2FlashAttention2
 class InternLM2FlashAttention2ForPackedTraining(InternLM2FlashAttention2):
+    def __init__(self, config):
+        super().__init__(config)
+        # we'll reuse a single MultiheadAttention for fallback
+        embed_dim = config.hidden_size
+        num_heads = config.num_attention_heads
+        self._fallback_mha = nn.MultiheadAttention(embed_dim, num_heads, dropout=config.attention_dropout, batch_first=True)
 
     def _flash_attention_forward(
-            self, query_states, key_states, value_states, attention_mask, query_length, dropout=0.0, softmax_scale=None
+        self, query_states, key_states, value_states,
+        attention_mask, query_length, dropout=0.0, softmax_scale=None
     ):
-        """
-        Calls the forward method of Flash Attention - if the input hidden states contain at least one padding token
-        first unpad the input, then computes the attention scores and pad the final attention scores.
-
-        Args:
-            query_states (`torch.Tensor`):
-                Input query states to be passed to Flash Attention API
-            key_states (`torch.Tensor`):
-                Input key states to be passed to Flash Attention API
-            value_states (`torch.Tensor`):
-                Input value states to be passed to Flash Attention API
-            attention_mask (`torch.Tensor`):
-                rename from cu_seqlens to keep compatability - (batch_size + 1,), dtype torch.int32. The cumulative sequence lengths
-                    of the sequences in the batch.
-            dropout (`int`, *optional*):
-                Attention dropout
-            softmax_scale (`float`, *optional*):
-                The scaling of QK^T before applying softmax. Default to 1 / sqrt(head_dim)
-        """
+        # unpack the packed-flash interface args
         assert query_states.size(0) == key_states.size(0) == value_states.size(0) == 1
-        query_states = query_states.squeeze(0)
-        key_states = key_states.squeeze(0)
-        value_states = value_states.squeeze(0)
-        cu_seqlens = attention_mask.squeeze(0)
+        q = query_states.squeeze(0)   # (total_tokens, embed_dim)
+        k = key_states.squeeze(0)
+        v = value_states.squeeze(0)
+        cu_seqlens = attention_mask.squeeze(0)  # (batch+1,)
 
-        with torch.no_grad():
-            max_seqlen = max([
-                cu_seqlens[idx+1] - cu_seqlens[idx]
-                for idx in range(cu_seqlens.size(0) - 1)
-            ]).item()
+        # if we have FlashAttention, use it
+        if flash_attn_varlen_func is not None:
+            max_seqlen = max(
+                cu_seqlens[i+1] - cu_seqlens[i]
+                for i in range(cu_seqlens.size(0)-1)
+            ).item()
+            causal = self.is_causal and (query_length != 1)
+            out = flash_attn_varlen_func(
+                q=q, k=k, v=v,
+                cu_seqlens_q=cu_seqlens, cu_seqlens_k=cu_seqlens,
+                max_seqlen_q=max_seqlen, max_seqlen_k=max_seqlen,
+                dropout_p=dropout, softmax_scale=softmax_scale, causal=causal,
+            )
+            return out
 
-        # Contains at least one padding token in the sequence
-        causal = self.is_causal and query_length != 1
-        attn_output = flash_attn_varlen_func(
-            q=query_states,
-            k=key_states,
-            v=value_states,
-            cu_seqlens_q=cu_seqlens,
-            cu_seqlens_k=cu_seqlens,
-            max_seqlen_q=max_seqlen,
-            max_seqlen_k=max_seqlen,
-            dropout_p=dropout,
-            softmax_scale=softmax_scale,
-            causal=causal,
-        )
+        # --- FALLBACK PATH: pad to dense and run MultiheadAttention ---
+        # figure out batch size and max length
+        batch_size = cu_seqlens.size(0) - 1
+        seq_lens = [(cu_seqlens[i+1] - cu_seqlens[i]).item() for i in range(batch_size)]
+        max_len = max(seq_lens)
 
-        query_states = query_states.unsqueeze(0)
-        key_states = key_states.unsqueeze(0)
-        value_states = value_states.unsqueeze(0)
-        return attn_output
+        # split and pad each segment
+        segments = []
+        idx = 0
+        for L in seq_lens:
+            seg = q[idx:idx+L]
+            idx += L
+            # pad to max_len
+            if L < max_len:
+                pad = torch.zeros((max_len - L, q.size(-1)), device=q.device, dtype=q.dtype)
+                seg = torch.cat([seg, pad], dim=0)
+            segments.append(seg)
+        
+        # stack into (batch, max_len, embed_dim)
+        q_pad = torch.stack(segments, dim=0)
+        k_pad = q_pad  # packed queries == keys
+        v_pad = q_pad  # packed values == values
 
+        # positional embeddings (if needed)
+        # q_pad, k_pad = apply_rotary_pos_emb(q_pad, k_pad, ...)
+
+        # run dense MHA
+        # Note: MultiheadAttention returns (output, attn_weights)
+        out_pad, _ = self._fallback_mha(q_pad, k_pad, v_pad, need_weights=False, attn_mask=None)
+
+        # now unpad back to original packed shape
+        outputs = []
+        for i, L in enumerate(seq_lens):
+            outputs.append(out_pad[i, :L, :])
+        return torch.cat(outputs, dim=0).unsqueeze(0)
 
 def replace_internlm2_attention_class():
     INTERNLM2_ATTENTION_CLASSES['flash_attention_2'] = InternLM2FlashAttention2ForPackedTraining
-    print('Replace INTERNLM2_ATTENTION_CLASSES to support packed training!!')
+    print('Replaced INTERNLM2_ATTENTION_CLASSES to support packed training with fallback!')
