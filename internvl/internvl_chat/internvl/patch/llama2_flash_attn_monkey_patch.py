@@ -6,12 +6,17 @@ import warnings
 from typing import Optional, Tuple
 
 import torch
-from flash_attn import __version__ as flash_attn_version
-from flash_attn.bert_padding import pad_input, unpad_input
-from flash_attn.flash_attn_interface import (flash_attn_func,
-                                             flash_attn_varlen_kvpacked_func)
 from transformers.models.llama.modeling_llama import (LlamaAttention,
                                                       LlamaModel, rotate_half)
+
+# === guard all flash_attn imports ===
+try:
+    from flash_attn import __version__ as flash_attn_version
+    from flash_attn.bert_padding import pad_input, unpad_input
+    from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_kvpacked_func
+except ImportError:
+    flash_attn_version = None
+    pad_input = unpad_input = flash_attn_func = flash_attn_varlen_kvpacked_func = None
 
 
 def apply_rotary_pos_emb(q, k, cos_sin, position_ids):
@@ -38,6 +43,12 @@ def forward(
     use_cache: bool = False,
     padding_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    # If flash_attn not available, fall back to the original LlamaAttention.forward
+    if flash_attn_version is None:
+        return LlamaAttention.forward(self, hidden_states, attention_mask, position_ids,
+                                      past_key_value, output_attentions, use_cache,
+                                      padding_mask)
+
     if output_attentions:
         warnings.warn(
             'Output attentions is not supported for patched `LlamaAttention`, returning `None` instead.'
@@ -54,7 +65,6 @@ def forward(
             (self.v_proj, kv_heads),
         )
     )
-    # shape: (b, s, num_heads, head_dim)
 
     kv_seq_len = k.shape[1]
     past_kv_len = 0
@@ -69,7 +79,6 @@ def forward(
         assert (
             flash_attn_version >= '2.1.0'
         ), 'past_key_value support requires flash-attn >= 2.1.0'
-        # reuse k, v
         k = torch.cat([past_key_value[0].transpose(1, 2), k], dim=1)
         v = torch.cat([past_key_value[1].transpose(1, 2), v], dim=1)
 
@@ -80,14 +89,13 @@ def forward(
             bsz, q_len, -1
         )
     else:
-        q, indices, cu_q_lens, max_s = unpad_input(q, attention_mask[:, -q_len:])
-        # We can skip concat and call unpad twice but seems better to call unpad only once.
-        kv, _, cu_k_lens, max_k = unpad_input(
+        q_unp, indices, cu_q_lens, max_s = unpad_input(q, attention_mask[:, -q_len:])
+        kv_unp, _, cu_k_lens, max_k = unpad_input(
             torch.stack((k, v), dim=2), attention_mask
         )
-        output_unpad = flash_attn_varlen_kvpacked_func(
-            q,
-            kv,
+        output_unp = flash_attn_varlen_kvpacked_func(
+            q_unp,
+            kv_unp,
             cu_q_lens,
             cu_k_lens,
             max_s,
@@ -96,18 +104,15 @@ def forward(
             softmax_scale=None,
             causal=True,
         )
-        output_unpad = output_unpad.reshape(-1, self.num_heads * self.head_dim)
-        output = pad_input(output_unpad, indices, bsz, q_len)
+        output_unp = output_unp.reshape(-1, self.num_heads * self.head_dim)
+        output = pad_input(output_unp, indices, bsz, q_len)
 
     return self.o_proj(output), None, past_key_value
 
 
-# Disable the transformation of the attention mask in LlamaModel as flash attention
-# takes a boolean key_padding_mask. Fills in the past kv length for use in forward.
 def _prepare_decoder_attention_mask(
     self, attention_mask, input_shape, inputs_embeds, past_key_values_length
 ):
-    # [bsz, seq_len]
     if past_key_values_length > 0 and attention_mask is not None:
         attention_mask = torch.cat(
             (
@@ -121,24 +126,25 @@ def _prepare_decoder_attention_mask(
             ),
             dim=-1,
         )
-
     if attention_mask is not None and torch.all(attention_mask):
-        return None  # This uses the faster call when training with full samples
-
+        return None
     return attention_mask
 
 
 def replace_llama2_attn_with_flash_attn():
+    # If flash_attn not installed, skip patch
+    if flash_attn_version is None:
+        print("[internvl] flash_attn not found; skipping FlashAttention patch.")
+        return
+
     cuda_major, cuda_minor = torch.cuda.get_device_capability()
     if cuda_major < 8:
         warnings.warn(
-            'Flash attention is only supported on A100 or H100 GPU during training due to head dim > 64 backward.'
-            'ref: https://github.com/HazyResearch/flash-attention/issues/190#issuecomment-1523359593'
+            'Flash attention is only supported on A100 or H100 GPU due to head dim >64 backward.'
         )
 
     LlamaModel._prepare_decoder_attention_mask = _prepare_decoder_attention_mask
     LlamaAttention.forward = forward
-
 
 def test():
     from fastchat.train.llama_flash_attn_monkey_patch import \
