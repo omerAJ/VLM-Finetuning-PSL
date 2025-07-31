@@ -11,7 +11,7 @@ export MASTER_PORT=34229
 export TF_CPP_MIN_LOG_LEVEL=3
 export LAUNCHER=pytorch
 
-OUTPUT_DIR='work_dirs/internvl_chat_v3/internvl3_1b_dynamic_res_2nd_finetune_full'
+OUTPUT_DIR='/content/drive/MyDrive/finetuning-output'
 
 if [ ! -d "$OUTPUT_DIR" ]; then
   mkdir -p "$OUTPUT_DIR"
@@ -34,7 +34,7 @@ torchrun \
   --use_fast_tokenizer False \
   --output_dir ${OUTPUT_DIR} \
   --meta_path "/content/VLM-Finetuning-PSL/config.json" \
- --overwrite_output_dir True \
+  --overwrite_output_dir True \
   --force_image_size 448 \
   --max_dynamic_patch 12 \
   --down_sample_ratio 0.5 \
@@ -50,7 +50,7 @@ torchrun \
   --gradient_accumulation_steps ${GRADIENT_ACC} \
   --evaluation_strategy "no" \
   --save_strategy "steps" \
-  --save_steps 200 \
+  --save_steps 2000 \
   --save_total_limit 1 \
   --learning_rate 1e-5 \
   --weight_decay 0.05 \
