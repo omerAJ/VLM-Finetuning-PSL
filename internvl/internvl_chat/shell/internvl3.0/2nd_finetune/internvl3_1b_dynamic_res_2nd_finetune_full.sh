@@ -70,4 +70,5 @@ torchrun \
   --use_llm_lora 32 \
   --min_num_frame 16 \
   --max_num_frame 64 \
+  --lora_enable True \
   2>&1 | tee -a "${OUTPUT_DIR}/training_log.txt"
