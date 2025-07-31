@@ -100,7 +100,7 @@ class TrainingArguments(transformers.TrainingArguments):
         default=16,
         metadata={"help": "How many bits to use."}
     )
-    lora_enable: bool = False
+    lora_enable: bool = True
     lora_r: int = 64
     lora_alpha: int = 16
     lora_dropout: float = 0.05
