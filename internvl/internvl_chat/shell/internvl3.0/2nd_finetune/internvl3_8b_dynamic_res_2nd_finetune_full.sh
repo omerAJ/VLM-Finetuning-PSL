@@ -11,7 +11,7 @@ export MASTER_PORT=34229
 export TF_CPP_MIN_LOG_LEVEL=3
 export LAUNCHER=pytorch
 
-OUTPUT_DIR='work_dirs/internvl_chat_v3/internvl3_8b_dynamic_res_2nd_finetune_full'
+OUTPUT_DIR='/content/drive/MyDrive/finetuning-output-Take2-8b'
 
 if [ ! -d "$OUTPUT_DIR" ]; then
   mkdir -p "$OUTPUT_DIR"
@@ -33,7 +33,7 @@ torchrun \
   --conv_style "internvl2_5" \
   --use_fast_tokenizer False \
   --output_dir ${OUTPUT_DIR} \
-  --meta_path "./shell/data/internvl_1_2_finetune_custom.json" \
+  --meta_path "/content/VLM-Finetuning-PSL/config.json" \
  --overwrite_output_dir True \
   --force_image_size 448 \
   --max_dynamic_patch 12 \
@@ -41,7 +41,7 @@ torchrun \
   --drop_path_rate 0.0 \
   --freeze_llm False \
   --freeze_mlp False \
-  --freeze_backbone True \
+  --freeze_backbone False \
   --vision_select_layer -1 \
   --dataloader_num_workers 4 \
   --bf16 True \
@@ -66,4 +66,6 @@ torchrun \
   --ps_version 'v2' \
   --deepspeed "zero_stage1_config.json" \
   --report_to "tensorboard" \
+  --min_num_frame 32 \
+  --max_num_frame 64 \
   2>&1 | tee -a "${OUTPUT_DIR}/training_log.txt"
