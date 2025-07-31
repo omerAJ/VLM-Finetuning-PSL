@@ -986,6 +986,7 @@ def train(attn_implementation=None):
             model.save_pretrained(training_args.output_dir, state_dict=state_dict)
             torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, 'non_lora_trainables.bin'))
     else:
+        print("\n\n\nSaving model for hf_trainer...\n\n\n")
         safe_save_model_for_hf_trainer(trainer=trainer,
                                        output_dir=training_args.output_dir)
 
