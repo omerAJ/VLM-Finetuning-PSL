@@ -65,4 +65,6 @@ torchrun \
   --ps_version 'v2' \
   --deepspeed "zero_stage1_config.json" \
   --report_to "tensorboard" \
+  --use_backbone_lora 64 \
+  --use_llm_lora 64 \
   2>&1 | tee -a "${OUTPUT_DIR}/training_log.txt"
