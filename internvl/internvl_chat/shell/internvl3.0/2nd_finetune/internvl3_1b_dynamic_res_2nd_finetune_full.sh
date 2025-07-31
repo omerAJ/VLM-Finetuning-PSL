@@ -39,7 +39,7 @@ torchrun \
   --max_dynamic_patch 12 \
   --down_sample_ratio 0.5 \
   --drop_path_rate 0.0 \
-  --freeze_llm False \
+  --freeze_llm True \
   --freeze_mlp False \
   --freeze_backbone True \
   --vision_select_layer -1 \
